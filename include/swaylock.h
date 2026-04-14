@@ -69,6 +69,7 @@ struct swaylock_args {
 	bool daemonize;
 	int ready_fd;
 	bool indicator_idle_visible;
+	bool manage_output_power;
 };
 
 struct swaylock_password {
@@ -100,6 +101,7 @@ struct swaylock_state {
 	bool run_display, locked;
 	struct ext_session_lock_manager_v1 *ext_session_lock_manager_v1;
 	struct ext_session_lock_v1 *ext_session_lock_v1;
+	struct zwlr_output_power_manager_v1 *zwlr_output_power_manager_v1;
 };
 
 struct swaylock_surface {
@@ -111,9 +113,11 @@ struct swaylock_surface {
 	struct wl_surface *child; // indicator surface made into subsurface
 	struct wl_subsurface *subsurface;
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
+	struct zwlr_output_power_v1 *zwlr_output_power_v1;
 	struct pool_buffer indicator_buffers[2];
 	bool created;
 	bool dirty;
+	bool output_power;
 	uint32_t width, height;
 	int32_t scale;
 	enum wl_output_subpixel subpixel;
@@ -143,5 +147,8 @@ void schedule_auth_idle(struct swaylock_state *state);
 void initialize_pw_backend(int argc, char **argv);
 void run_pw_backend_child(void);
 void clear_buffer(char *buf, size_t size);
+
+void screen_wake(struct swaylock_surface *surface, bool force);
+void screen_power_off(struct swaylock_surface *surface, bool force);
 
 #endif

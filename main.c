@@ -25,6 +25,7 @@
 #include "seat.h"
 #include "swaylock.h"
 #include "ext-session-lock-v1-client-protocol.h"
+#include "wlr-output-power-management-unstable-v1-client-protocol.h"
 
 static uint32_t parse_color(const char *color) {
 	if (color[0] == '#') {
@@ -99,6 +100,9 @@ static void destroy_surface(struct swaylock_surface *surface) {
 	if (surface->ext_session_lock_surface_v1 != NULL) {
 		ext_session_lock_surface_v1_destroy(surface->ext_session_lock_surface_v1);
 	}
+	if (surface->zwlr_output_power_v1 != NULL) {
+		zwlr_output_power_v1_destroy(surface->zwlr_output_power_v1);
+	}
 	if (surface->subsurface) {
 		wl_subsurface_destroy(surface->subsurface);
 	}
@@ -115,6 +119,7 @@ static void destroy_surface(struct swaylock_surface *surface) {
 }
 
 static const struct ext_session_lock_surface_v1_listener ext_session_lock_surface_v1_listener;
+static const struct zwlr_output_power_v1_listener zwlr_output_power_v1_listener;
 
 static cairo_surface_t *select_image(struct swaylock_state *state,
 		struct swaylock_surface *surface);
@@ -155,6 +160,14 @@ static void create_surface(struct swaylock_surface *surface) {
 		wl_region_destroy(region);
 	}
 
+	if (state->args.manage_output_power) {
+		surface->zwlr_output_power_v1 = zwlr_output_power_manager_v1_get_output_power(
+			state->zwlr_output_power_manager_v1, surface->output);
+
+		zwlr_output_power_v1_add_listener(surface->zwlr_output_power_v1,
+				&zwlr_output_power_v1_listener, surface);
+	}
+
 	surface->created = true;
 }
 
@@ -171,6 +184,33 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 
 static const struct ext_session_lock_surface_v1_listener ext_session_lock_surface_v1_listener = {
 	.configure = ext_session_lock_surface_v1_handle_configure,
+};
+
+static void output_power_mode(void *data,
+		struct zwlr_output_power_v1 *zwlr_output_power_v1, uint32_t mode) {
+	struct swaylock_surface *surface = data;
+	bool output_power = mode == ZWLR_OUTPUT_POWER_V1_MODE_ON;
+	if (surface->output_power == output_power) {
+		return;
+	}
+	surface->output_power = output_power;
+}
+
+static void output_power_failed(void *data,
+		struct zwlr_output_power_v1 *zwlr_output_power_v1) {
+	struct swaylock_surface *surface = data;
+	swaylock_log(LOG_DEBUG, "Output power management failed for output %s",
+			surface->output_name ? surface->output_name : "?");
+	zwlr_output_power_v1_destroy(zwlr_output_power_v1);
+	if (surface->zwlr_output_power_v1 == zwlr_output_power_v1) {
+		surface->zwlr_output_power_v1 = NULL;
+		surface->output_power = NULL;
+	}
+}
+
+static const struct zwlr_output_power_v1_listener zwlr_output_power_v1_listener = {
+	.mode = output_power_mode,
+	.failed = output_power_failed,
 };
 
 void damage_state(struct swaylock_state *state) {
@@ -282,6 +322,11 @@ static void handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
+	} else if (strcmp(interface, zwlr_output_power_manager_v1_interface.name) == 0) {
+		if (state->args.manage_output_power) {
+			state->zwlr_output_power_manager_v1 = wl_registry_bind(registry, name,
+					&zwlr_output_power_manager_v1_interface, 1);
+		}
 	}
 }
 
@@ -501,6 +546,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		{"scaling", required_argument, NULL, 's'},
 		{"tiling", no_argument, NULL, 't'},
 		{"no-unlock-indicator", no_argument, NULL, 'u'},
+		{"output-power", no_argument, NULL, 'o'},
 		{"show-keyboard-layout", no_argument, NULL, 'k'},
 		{"hide-keyboard-layout", no_argument, NULL, 'K'},
 		{"show-failed-attempts", no_argument, NULL, 'F'},
@@ -576,6 +622,8 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			"Image scaling mode: stretch, fill, fit, center, tile, solid_color.\n"
 		"  -t, --tiling                     "
 			"Same as --scaling=tile.\n"
+		"  -o, --output-power               "
+			"Enable output power management (power off on lock, wake on keypress).\n"
 		"  -u, --no-unlock-indicator        "
 			"Disable the unlock indicator.\n"
 		"  -v, --version                    "
@@ -669,7 +717,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 	optind = 1;
 	while (1) {
 		int opt_idx = 0;
-		c = getopt_long(argc, argv, "c:deFfhi:kKLlnrs:tuvC:R:", long_options,
+		c = getopt_long(argc, argv, "c:deoFfhi:kKLlnrs:tuvC:R:", long_options,
 				&opt_idx);
 		if (c == -1) {
 			break;
@@ -736,6 +784,11 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		case 'n':
 			if (line_mode) {
 				*line_mode = LM_INSIDE;
+			}
+			break;
+		case 'o':
+			if (state) {
+				state->args.manage_output_power = true;
 			}
 			break;
 		case 'r':
@@ -1112,6 +1165,7 @@ int main(int argc, char **argv) {
 		.hide_keyboard_layout = false,
 		.show_failed_attempts = false,
 		.indicator_idle_visible = false,
+		.manage_output_power = false,
 		.ready_fd = -1,
 	};
 	wl_list_init(&state.images);
@@ -1223,6 +1277,7 @@ int main(int argc, char **argv) {
 	struct swaylock_surface *surface;
 	wl_list_for_each(surface, &state.surfaces, link) {
 		create_surface(surface);
+		screen_power_off(surface, true);
 	}
 
 	while (!state.locked) {

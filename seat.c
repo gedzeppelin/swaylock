@@ -7,6 +7,7 @@
 #include "swaylock.h"
 #include "seat.h"
 #include "loop.h"
+#include "wlr-output-power-management-unstable-v1-client-protocol.h"
 
 static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard,
 		uint32_t format, int32_t fd, uint32_t size) {
@@ -78,6 +79,13 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard,
 	uint32_t codepoint = xkb_state_key_get_utf32(state->xkb.state, keycode);
 	if (key_state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		swaylock_handle_key(state, sym, codepoint);
+
+		if (state->args.manage_output_power) {
+			struct swaylock_surface *surface;
+			wl_list_for_each(surface, &state->surfaces, link) {
+				screen_wake(surface, false);
+			}
+		}
 	}
 
 	if (seat->repeat_timer) {
@@ -219,6 +227,22 @@ static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
 static void seat_handle_name(void *data, struct wl_seat *wl_seat,
 		const char *name) {
 	// Who cares
+}
+
+void screen_wake(struct swaylock_surface *surface, bool force) {
+	if (surface->zwlr_output_power_v1 && (!surface->output_power || force)) {
+		swaylock_log(LOG_DEBUG, "Powring on screen via zwlr");
+		zwlr_output_power_v1_set_mode(surface->zwlr_output_power_v1,
+			ZWLR_OUTPUT_POWER_V1_MODE_ON);
+	}
+}
+
+void screen_power_off(struct swaylock_surface *surface, bool force) {
+	if (surface->zwlr_output_power_v1 && (surface->output_power || force)) {
+		swaylock_log(LOG_DEBUG, "Powering off screen via zwlr");
+		zwlr_output_power_v1_set_mode(surface->zwlr_output_power_v1,
+			ZWLR_OUTPUT_POWER_V1_MODE_OFF);
+	}
 }
 
 const struct wl_seat_listener seat_listener = {
